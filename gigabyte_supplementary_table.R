@@ -195,13 +195,39 @@ writexl::write_xlsx(
     bibliography = bibliography),
   "smarter_datasets_v0.4.10.xlsx")
 
+# Function to fetch BibTeX from DOI using rcrossref
+get_bibtex <- function(doi) {
+  tryCatch({
+    # Fetch BibTeX format from CrossRef API
+    bibtex_entry <- rcrossref::cr_cn(doi, format = "bibtex")
+    return(bibtex_entry)
+  }, error = function(e) {
+    # Handle cases where the DOI might be invalid or unreachable
+    return(NA)
+  })
+}
+
+# Memoizing the function to use cache
+get_bibtex_cached <- memoise::memoise(get_bibtex)
+
 # collect a table of dataset with doi (for the main article)
 citation_table <- all_datasets %>% 
   dplyr::select(file, chip_name, n_of_individuals, doi) %>%
   dplyr::filter(!is.na(doi)) %>%
   dplyr::mutate(short_citation = sapply(doi, get_citation_from_doi_cache)) %>%
   dplyr::mutate(full_citation = sapply(doi, get_full_citation_apa_cached)) %>%
+  dplyr::mutate(bibtex = sapply(doi, get_bibtex_cached)) %>%
   dplyr::as_tibble()
 
 # Write to an Excel file
 writexl::write_xlsx(citation_table, "smarter_datasets_citation_v0.4.10.xlsx")
+
+# write citations to a text file in BibTeX format
+output_file <- "smarter_datasets_citation_v0.4.10.bib"
+
+# Write the BibTeX entries to the text file
+writeLines(citation_table$bibtex[!is.na(citation_table$bibtex)], con = output_file)
+
+# Check the file content (optional)
+file.show(output_file)
+
