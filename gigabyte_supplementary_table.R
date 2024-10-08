@@ -2,6 +2,7 @@
 require(dplyr)
 require(tidyr)
 require(tibble)
+require(memoise)
 require(writexl)
 require(rcrossref)
 require(smarterapi)
@@ -82,10 +83,7 @@ get_first_non_na_author <- function(authors) {
   return("Unknown Author")
 }
 
-# Create an empty cache environment
-doi_cache <- new.env(parent = emptyenv())
-
-# define an helper function to collect DOI information using cache
+# define an helper function to collect DOI information
 get_citation_from_doi <- function(doi) {
   # First strip any URL prefix from the DOI
   doi <- strip_doi_url(doi)
@@ -93,12 +91,6 @@ get_citation_from_doi <- function(doi) {
   # Silently return NA for NA input
   if (is.na(doi)) {
     return(NA)
-  }
-  
-  # Check if DOI is already cached
-  if (exists(doi, envir = doi_cache)) {
-    # Return cached result
-    return(doi_cache[[doi]])
   }
   
   # If not cached, retrieve metadata and cache the result
@@ -123,21 +115,20 @@ get_citation_from_doi <- function(doi) {
     # Create citation in "Author et al. Year" format
     citation <- paste(first_author, "et al.", year)
     
-    # Store the result in the cache
-    doi_cache[[doi]] <- citation
-    
     # Return the citation
     return(citation)
   }, error = function(e) {
-    # Handle errors (e.g., invalid DOI) and cache the result as NA
-    doi_cache[[doi]] <- NA
+    # Handle errors (e.g., invalid DOI)
     return(NA)
   })
 }
 
+# Memoizing the function to use cache
+get_citation_from_doi_cache <- memoise::memoise(get_citation_from_doi)
+
 # Apply the function to the DOI column and create a new column 'citation'
 supplementary_table <- supplementary_table %>%
-  dplyr::mutate(citation = sapply(doi, get_citation_from_doi)) %>%
+  dplyr::mutate(citation = sapply(doi, get_citation_from_doi_cache)) %>%
   dplyr::mutate(citation = tidyr::replace_na(citation, "unpublished")) %>%
   dplyr::select(c(
     "dataset_id",
@@ -156,8 +147,13 @@ supplementary_table <- supplementary_table %>%
 # separate sheep from goats
 sheep_breeds <- supplementary_table %>%
   dplyr::filter(species == "Sheep")
+
 goat_breeds <- supplementary_table %>%
   dplyr::filter(species == "Goat")
+
+# write the sheep and goat breeds to a CSV file
+write.csv(sheep_breeds, "smarter_SHEEP_datasets_v0.4.10.csv", row.names = FALSE)
+write.csv(goat_breeds, "smarter_GOATS_datasets_v0.4.10.csv", row.names = FALSE)
 
 # Assuming you already have an environment named doi_cache
 # with DOIs as names and short citations as values
@@ -174,19 +170,20 @@ get_full_citation_apa <- function(doi) {
   })
 }
 
-# Convert doi_cache environment to a data frame
-doi_list <- ls(envir = doi_cache)  # Get DOIs (names in the environment)
-short_citations <- mget(doi_list, envir = doi_cache)  # Get short citations (values in the environment)
+# Memoizing the function to use cache
+get_full_citation_apa_cached <- memoise::memoise(get_full_citation_apa)
 
 # Create a data frame with DOIs and short citations
-bibliography <- data.frame(
-  doi = doi_list,  # First column: DOI
-  short_citation = unlist(short_citations)  # Second column: Short citation
-)
+bibliography <-supplementary_table %>%
+  dplyr::ungroup() %>%
+  dplyr::select(citation, doi) %>%
+  dplyr::distinct() %>%
+  dplyr::filter(!is.na(doi)) %>%
+  dplyr::rename(short_citation = citation)
 
 # Add a column for the full citation using the apa style
 bibliography <- bibliography %>%
-  mutate(full_citation = sapply(doi, get_full_citation_apa)) %>%
+  dplyr::mutate(full_citation = sapply(doi, get_full_citation_apa_cached)) %>%
   dplyr::select(c("short_citation", "full_citation", "doi")) %>%
   tibble::as_tibble()
 
@@ -198,3 +195,13 @@ writexl::write_xlsx(
     bibliography = bibliography),
   "smarter_datasets_v0.4.10.xlsx")
 
+# collect a table of dataset with doi (for the main article)
+citation_table <- all_datasets %>% 
+  dplyr::select(file, chip_name, n_of_individuals, doi) %>%
+  dplyr::filter(!is.na(doi)) %>%
+  dplyr::mutate(short_citation = sapply(doi, get_citation_from_doi_cache)) %>%
+  dplyr::mutate(full_citation = sapply(doi, get_full_citation_apa_cached)) %>%
+  dplyr::as_tibble()
+
+# Write to an Excel file
+writexl::write_xlsx(citation_table, "smarter_datasets_citation_v0.4.10.xlsx")
