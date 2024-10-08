@@ -153,6 +153,12 @@ supplementary_table <- supplementary_table %>%
     "doi")) %>%
   dplyr::arrange(species, dataset_id, breed, country)
 
+# separate sheep from goats
+sheep_breeds <- supplementary_table %>%
+  dplyr::filter(species == "Sheep")
+goat_breeds <- supplementary_table %>%
+  dplyr::filter(species == "Goat")
+
 # Assuming you already have an environment named doi_cache
 # with DOIs as names and short citations as values
 
@@ -187,6 +193,8 @@ bibliography <- bibliography %>%
 # Write to an Excel file
 writexl::write_xlsx(
   list(
-    datasets = supplementary_table,
+    sheep_breeds = sheep_breeds,
+    goat_breeds = goat_breeds,
     bibliography = bibliography),
   "smarter_datasets_v0.4.10.xlsx")
+
