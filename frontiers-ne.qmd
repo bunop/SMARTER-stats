@@ -243,7 +243,7 @@ writexl::write_xlsx(
   list(
     citations = citations,
     bibliography = bibliography),
-  "sheep_info.xlsx")
+  "frontiers-ne.xlsx")
 ```
 
-Show [sheep_info.xlsx](sheep_info.xlsx)
+Show [frontiers-ne.xlsx](frontiers-ne.xlsx)
