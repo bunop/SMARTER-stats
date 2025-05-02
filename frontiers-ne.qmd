@@ -1,0 +1,249 @@
+---
+title: "Frontiers Ne"
+author: "Paolo Cozzi"
+date: today
+toc: true
+number-sections: true
+format:
+  html:
+    code-line-numbers: true
+    html-math-method: katex
+    df-print: paged
+    code-fold: true
+    code-summary: "Show the code"
+    toc-depth: 4
+    embed-resources: true  # Embed all resources directly into the HTML file
+editor: source
+---
+
+```{r setup}
+#| label: setup
+#| output: false
+require(dplyr)
+require(tidyr)
+require(tibble)
+require(memoise)
+require(writexl)
+require(rcrossref)
+require(smarterapi)
+```
+
+## Get sheep breeds for Frontiers paper
+
+Search for *Churra* and *Tibetan* sheeps and collect their *code*:
+
+```{r sheep_breeds}
+#| label: sheep_breeds
+#| code-fold: false
+# collect smarter breeds as rows
+churra_breed <- smarterapi::get_smarter_breeds(
+  query = list(species = "Sheep", name = "Churra")
+)
+tibetan_breed <- smarterapi::get_smarter_breeds(
+  query = list(species = "Sheep", name = "Tibetan")
+)
+
+# select code as a single character string
+churra_code <- churra_breed %>% 
+  dplyr::select(code) %>%
+  dplyr::pull()
+tibetan_code <- tibetan_breed %>% 
+  dplyr::select(code) %>%
+  dplyr::pull()
+```
+
+## Collect selected samples
+
+Select the desired samples. Use multiple query terms at the same time
+
+```{r sheep_samples}
+#| label: sheep_samples
+#| code-fold: false
+sheep_samples <- smarterapi::get_smarter_samples(
+  species = "Sheep",
+  query = list(breed_code = churra_code, breed_code = tibetan_code)
+)
+```
+
+Now collect all datasets, and merge them with samples. Collect a subset of columns
+and then group them:
+
+```{r sheep_samples_merged}
+#| label: sheep_samples_merged
+#| code-fold: false
+#| depends: sheep_samples
+sheep_datasets <- smarterapi::get_smarter_datasets(
+  query = list(species = "Sheep", type = "genotypes")
+)
+sheep_samples_merged <- dplyr::inner_join(
+  sheep_datasets, 
+  sheep_samples, 
+  by = dplyr::join_by(`_id.$oid` == `dataset_id.$oid`)
+)
+
+# collect only the desired columns
+columns <- c(
+  "_id.$oid",
+  "breed_code",
+  "chip_name.y",
+  "partner",
+  "uploader",
+  "country.y",
+  "type.y",
+  "doi"
+)
+
+sheep_info <- sheep_samples_merged %>%
+  dplyr::select(all_of(columns)) %>%
+  dplyr::rename(
+    "dataset_id$oid" = "_id.$oid",
+    "chip_name" = "chip_name.y",
+    "country" = "country.y",
+    "type" = "type.y"
+  ) %>%
+  dplyr::group_by(
+    `dataset_id$oid`,
+    breed_code,
+    chip_name,
+    partner,
+    uploader,
+    country,
+    type,
+    doi
+  ) %>%
+  dplyr::summarise(count = n())
+sheep_info
+```
+
+There are two main references for *Tibetan* and *Churra* datasets. There are also some samples which comes 
+as *foreground* data
+
+## Collect DOI information
+
+Let's resolve the doi:
+
+```{r sheep_doi}
+#| label: sheep_doi
+#| depends: sheep_info
+# declare some stuff before resolving dois
+
+# Function to strip the URL prefix if it exists
+strip_doi_url <- function(doi) {
+  # Use sub() to remove the https://doi.org/ part if it exists
+  stripped_doi <- sub("^https?://(dx\\.)?doi\\.org/", "", doi)
+  return(stripped_doi)
+}
+
+get_first_non_na_author <- function(authors) {
+  # Loop through each row of authors (assuming authors is a data frame)
+  for (i in seq_len(nrow(authors))) {
+    # Access each author as a row (a list or named vector)
+    author <- authors[i, ]
+    
+    # Check if family name exists and is not NA
+    if (!is.null(author[["family"]]) && !is.na(author[["family"]])) {
+      return(author[["family"]])  # Return the first valid family name
+    }
+  }
+  
+  # If no valid family name found, return "Unknown Author"
+  return("Unknown Author")
+}
+
+# define an helper function to collect DOI information
+get_citation_from_doi <- function(doi) {
+  # First strip any URL prefix from the DOI
+  doi <- strip_doi_url(doi)
+  
+  # Silently return NA for NA input
+  if (is.na(doi)) {
+    return(NA)
+  }
+  
+  # If not cached, retrieve metadata and cache the result
+  tryCatch({
+    # Retrieve metadata from CrossRef
+    metadata <- rcrossref::cr_cn(doi, format = "citeproc-json")
+    
+    # Check if author information exists and use the helper function to get the first valid author
+    if (!is.null(metadata$author) && length(metadata$author) > 0) {
+      first_author <- get_first_non_na_author(metadata$author)
+    } else {
+      first_author <- "Unknown Author"
+    }
+    
+    # Extract the year
+    if (!is.null(metadata$issued$`date-parts`[[1]][1])) {
+      year <- metadata$issued$`date-parts`[[1]][1]
+    } else {
+      year <- "Unknown Year"
+    }
+    
+    # Create citation in "Author et al. Year" format
+    citation <- paste(first_author, "et al.", year)
+    
+    # Return the citation
+    return(citation)
+  }, error = function(e) {
+    # Handle errors (e.g., invalid DOI)
+    return(NA)
+  })
+}
+
+# Memoizing the function to use cache
+get_citation_from_doi_cache <- memoise::memoise(get_citation_from_doi)
+
+# Helper function to get full citation in apa style
+get_full_citation_apa <- function(doi) {
+  tryCatch({
+    # Fetch the full citation in apa style using rcrossref
+    full_citation <- rcrossref::cr_cn(doi, format = "text", style = "apa")
+    return(full_citation)
+  }, error = function(e) {
+    # If there's an error (e.g., invalid DOI), return NA
+    return(NA)
+  })
+}
+
+# Memoizing the function to use cache
+get_full_citation_apa_cached <- memoise::memoise(get_full_citation_apa)
+
+# now add citation to the sheep info table
+citations <- sheep_info %>%
+  dplyr::mutate(short_citation = sapply(doi, get_citation_from_doi_cache)) %>%
+  dplyr::mutate(short_citation = tidyr::replace_na(short_citation, "unpublished"))
+citations
+```
+
+Collect the full bibliography:
+
+```{r sheep_bibliography}
+#| label: sheep_bibliography
+#| warning: false
+#| depends: sheep_doi
+# Create a data frame with DOIs and short citations
+bibliography <-citations %>%
+  dplyr::ungroup() %>%
+  dplyr::select(short_citation, doi) %>%
+  dplyr::distinct() %>%
+  dplyr::filter(!is.na(doi))
+
+# Add a column for the full citation using the apa style
+bibliography <- bibliography %>%
+  dplyr::mutate(full_citation = sapply(doi, get_full_citation_apa_cached)) %>%
+  dplyr::select(c("short_citation", "full_citation", "doi")) %>%
+  tibble::as_tibble()
+bibliography
+```
+
+Save stuff into `.xlsx` file:
+
+```{r create_xlsx}
+writexl::write_xlsx(
+  list(
+    citations = citations,
+    bibliography = bibliography),
+  "sheep_info.xlsx")
+```
+
+Show [sheep_info.xlsx](sheep_info.xlsx)
